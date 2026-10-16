@@ -1,0 +1,6 @@
+customtkinter>=5.2.2
+pillow>=10.0
+yt-dlp[default]
+spotdl>=4.2
+deno
+static-ffmpeg
