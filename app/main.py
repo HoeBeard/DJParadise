@@ -19,13 +19,14 @@ if APP_DIR not in sys.path:
     sys.path.insert(0, APP_DIR)
 
 import customtkinter as ctk  # noqa: E402
+import tkinter as tk  # noqa: E402
 from tkinter import filedialog, messagebox  # noqa: E402
 from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 
 from engines import SPOTS, FORMATS, DownloadJob, validate_url  # noqa: E402
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 SOFTWARE_PAGE = "https://hbcs.info/software/"
@@ -37,23 +38,28 @@ SETTINGS_FILE = os.path.join(ROOT, ".runtime", "settings.json")
 IS_WIN = os.name == "nt"
 
 # Palette
-BG = "#0a0c13"
-PANEL = "#10141f"
-CARD = "#151a28"
-CARD_HI = "#1a2032"
-FIELD = "#0d111b"
-BORDER = "#232a3f"
-TEXT = "#eef1f8"
-MUTED = "#8a93a8"
-FAINT = "#4a5269"
-ACCENT = "#4f8cff"
-ACCENT_HOVER = "#3a74e0"
+BG = "#05080f"
+PANEL = "#0b111d"
+CARD = "#0f1726"
+CARD_HI = "#16213a"
+FIELD = "#070c16"
+BORDER = "#1a2a48"
+TEXT = "#eaf2ff"
+MUTED = "#8195b8"
+FAINT = "#45567a"
+ACCENT = "#1e90ff"
+ACCENT_HOVER = "#1273d6"
 GOOD = "#2ecc71"
 BAD = "#ff5d6c"
 
 
 def font(size, weight="normal"):
     return ctk.CTkFont(size=size, weight=weight)
+
+
+def make_menu(parent):
+    return tk.Menu(parent, tearoff=0, bg=CARD_HI, fg=TEXT, activebackground=ACCENT,
+                   activeforeground="white", bd=0, relief="flat", font=("Segoe UI", 10))
 
 
 def default_music_dir():
@@ -70,6 +76,8 @@ def load_settings():
         "organize": True,
         "spotify_client_id": "",
         "spotify_client_secret": "",
+        "spot_dirs": {},
+        "recent_dirs": [],
     }
     try:
         with open(SETTINGS_FILE, "r", encoding="utf-8") as fh:
@@ -78,6 +86,10 @@ def load_settings():
         pass
     if data.get("format") not in FORMATS:
         data["format"] = "MP3"
+    if not isinstance(data.get("spot_dirs"), dict):
+        data["spot_dirs"] = {}
+    if not isinstance(data.get("recent_dirs"), list):
+        data["recent_dirs"] = []
     return data
 
 
@@ -201,11 +213,73 @@ class SpotCard(ctk.CTkFrame):
 
         self.status = ctk.CTkLabel(self, text="Ready", text_color=MUTED, font=font(12),
                                    anchor="w", justify="left", wraplength=280)
-        self.status.grid(row=5, column=0, sticky="ew", padx=18, pady=(8, 16))
+        self.status.grid(row=5, column=0, sticky="ew", padx=18, pady=(8, 0))
+
+        dest = ctk.CTkFrame(self, fg_color=FIELD, corner_radius=8)
+        dest.grid(row=6, column=0, sticky="ew", padx=18, pady=(10, 16))
+        dest.grid_columnconfigure(0, weight=1)
+        self.dest_label = ctk.CTkLabel(dest, text="", text_color=MUTED, font=font(11),
+                                       anchor="w", cursor="hand2")
+        self.dest_label.grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=4)
+        self.dest_label.bind("<Button-1>", lambda e: self.app.open_folder(self.app.output_for(self.spot)))
+        self.dest_btn = ctk.CTkButton(dest, text="Change", width=64, height=24, corner_radius=6,
+                                      fg_color="transparent", hover_color=CARD_HI,
+                                      text_color=ACCENT, font=font(11, "bold"),
+                                      command=self.folder_menu)
+        self.dest_btn.grid(row=0, column=1, padx=(0, 4), pady=4)
+        self.refresh_destination()
         self.bind("<Configure>", self._rewrap)
 
     def _rewrap(self, event):
         self.status.configure(wraplength=max(event.width - 40, 120))
+        self.refresh_destination(event.width)
+
+    # -- save location for this spot
+    def refresh_destination(self, width=None):
+        path = self.app.output_for(self.spot)
+        custom = self.spot["id"] in self.app.settings.get("spot_dirs", {})
+        try:
+            width = int(width or self.winfo_width())
+        except Exception:
+            width = 320
+        if width < 100:
+            width = 320
+        room = max(int((width - 140) / 6.5), 16)
+        shown = path if len(path) <= room else "…" + path[-(room - 1):]
+        self.dest_label.configure(text=("★ " if custom else "") + shown,
+                                  text_color=TEXT if custom else MUTED)
+
+    def folder_menu(self):
+        menu = make_menu(self)
+        menu.add_command(label="Choose a folder for %s %s…" % (self.spot["service"], self.spot["kind"].lower()),
+                         command=self.choose_folder)
+        if self.spot["id"] in self.app.settings.get("spot_dirs", {}):
+            menu.add_command(label="Use the main Save To folder", command=self.reset_folder)
+        menu.add_separator()
+        menu.add_command(label="Open this folder", command=lambda: self.app.open_folder(self.app.output_for(self.spot)))
+        x = self.dest_btn.winfo_rootx()
+        y = self.dest_btn.winfo_rooty() + self.dest_btn.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def choose_folder(self):
+        current = self.app.output_for(self.spot)
+        start = current if os.path.isdir(current) else self.app.settings["output_dir"]
+        path = filedialog.askdirectory(initialdir=start if os.path.isdir(start) else os.path.expanduser("~"),
+                                       title="Where should %s %s downloads go?" % (self.spot["service"], self.spot["kind"].lower()))
+        if path:
+            self.app.settings.setdefault("spot_dirs", {})[self.spot["id"]] = os.path.normpath(path)
+            self.app.remember_recent(path)
+            save_settings(self.app.settings)
+            self.refresh_destination()
+            self.app.log("info", "%s %s now saves to %s" % (self.spot["service"], self.spot["kind"].lower(), os.path.normpath(path)))
+
+    def reset_folder(self):
+        self.app.settings.get("spot_dirs", {}).pop(self.spot["id"], None)
+        save_settings(self.app.settings)
+        self.refresh_destination()
 
     # -- actions
     def paste(self):
@@ -316,12 +390,15 @@ class SettingsWindow(ctk.CTkToplevel):
 
         ctk.CTkLabel(wrap, text="Settings", font=font(22, "bold"), text_color=TEXT).pack(anchor="w")
 
-        ctk.CTkLabel(wrap, text="LIBRARY", font=font(11, "bold"), text_color=MUTED).pack(anchor="w", pady=(18, 4))
-        self.organize = ctk.CTkSwitch(wrap, text="Sort downloads into Spotify, SoundCloud and YouTube folders",
-                                      font=font(12), text_color=TEXT, progress_color=ACCENT)
-        if app.settings.get("organize", True):
-            self.organize.select()
-        self.organize.pack(anchor="w")
+        ctk.CTkLabel(wrap, text="SAVE LOCATIONS", font=font(11, "bold"), text_color=MUTED).pack(anchor="w", pady=(18, 4))
+        custom = len(app.settings.get("spot_dirs", {}))
+        ctk.CTkLabel(wrap, text=("%d spot%s use%s its own folder." % (custom, "" if custom == 1 else "s", "s" if custom == 1 else ""))
+                     if custom else "Every spot saves to the main Save To folder.",
+                     font=font(12), text_color=TEXT).pack(anchor="w")
+        ctk.CTkButton(wrap, text="Send every spot to the main folder", width=10, height=30, corner_radius=8,
+                      fg_color=CARD_HI, hover_color=BORDER, text_color=TEXT, font=font(12),
+                      state="normal" if custom else "disabled",
+                      command=self.reset_spots).pack(anchor="w", pady=(8, 0))
 
         ctk.CTkLabel(wrap, text="SPOTIFY APP KEYS  (OPTIONAL)", font=font(11, "bold"),
                      text_color=MUTED).pack(anchor="w", pady=(22, 2))
@@ -352,9 +429,15 @@ class SettingsWindow(ctk.CTkToplevel):
                       ).pack(side="right", padx=(0, 8))
         self.after(50, self.grab_set)
 
+    def reset_spots(self):
+        self.app.settings["spot_dirs"] = {}
+        save_settings(self.app.settings)
+        self.app.refresh_destinations()
+        self.app.log("info", "Every spot now saves to the main folder")
+        self.destroy()
+
     def save(self):
         s = self.app.settings
-        s["organize"] = bool(self.organize.get())
         s["spotify_client_id"] = self.cid.get().strip()
         s["spotify_client_secret"] = self.secret.get().strip()
         save_settings(s)
@@ -409,10 +492,10 @@ class DJParadise(ctk.CTk):
         head.grid(row=0, column=0, sticky="ew", padx=28, pady=(22, 0))
         head.grid_columnconfigure(1, weight=1)
 
-        h = 58
+        h = 72
         w = max(1, int(h * self.logo_img.width / float(self.logo_img.height or 1)))
-        if w > 220:
-            w, h = 220, max(1, int(220 * self.logo_img.height / float(self.logo_img.width)))
+        if w > 240:
+            w, h = 240, max(1, int(240 * self.logo_img.height / float(self.logo_img.width)))
         logo = ctk.CTkImage(light_image=self.logo_img, dark_image=self.logo_img, size=(w, h))
         logo_btn = ctk.CTkLabel(head, image=logo, text="", cursor="hand2")
         logo_btn.grid(row=0, column=0, rowspan=2, sticky="w", padx=(0, 16))
@@ -439,18 +522,40 @@ class DJParadise(ctk.CTk):
         bar.grid_columnconfigure(1, weight=1)
 
         ctk.CTkLabel(bar, text="SAVE TO", font=font(11, "bold"), text_color=MUTED
-                     ).grid(row=0, column=0, padx=(18, 10), pady=12)
-        self.path_btn = ctk.CTkButton(bar, text="", anchor="w", height=34, corner_radius=8,
-                                      fg_color=FIELD, hover_color=CARD_HI, text_color=TEXT,
-                                      font=font(12), command=self.choose_folder)
-        self.path_btn.grid(row=0, column=1, sticky="ew", pady=12)
+                     ).grid(row=0, column=0, padx=(18, 10), pady=(12, 0))
+        self.path_entry = ctk.CTkEntry(bar, height=34, corner_radius=8, fg_color=FIELD,
+                                       border_color=BORDER, border_width=1, text_color=TEXT,
+                                       font=font(12))
+        self.path_entry.grid(row=0, column=1, sticky="ew", pady=(12, 0))
+        self.path_entry.bind("<Return>", lambda e: self.apply_typed_path())
+        self.path_entry.bind("<FocusOut>", lambda e: self.apply_typed_path(quiet=True))
         self._show_path()
-        ctk.CTkButton(bar, text="Open folder", width=110, height=34, corner_radius=8,
+
+        btns = ctk.CTkFrame(bar, fg_color="transparent")
+        btns.grid(row=0, column=2, padx=(8, 18), pady=(12, 0))
+        ctk.CTkButton(btns, text="Change…", width=86, height=34, corner_radius=8,
+                      fg_color=ACCENT, hover_color=ACCENT_HOVER, text_color="white",
+                      font=font(12, "bold"), command=self.choose_folder).pack(side="left")
+        self.recent_btn = ctk.CTkButton(btns, text="Recent ▾", width=84, height=34, corner_radius=8,
+                                        fg_color=CARD_HI, hover_color=BORDER, text_color=TEXT,
+                                        font=font(12), command=self.recent_menu)
+        self.recent_btn.pack(side="left", padx=(6, 0))
+        ctk.CTkButton(btns, text="Open", width=64, height=34, corner_radius=8,
                       fg_color=CARD_HI, hover_color=BORDER, text_color=TEXT, font=font(12),
-                      command=self.open_output).grid(row=0, column=2, padx=(10, 18))
+                      command=self.open_output).pack(side="left", padx=(6, 0))
+
+        self.organize = ctk.CTkSwitch(bar, text="Sort into Spotify, SoundCloud and YouTube folders",
+                                      font=font(12), text_color=MUTED, progress_color=ACCENT,
+                                      switch_width=34, switch_height=17, command=self.set_organize)
+        if self.settings.get("organize", True):
+            self.organize.select()
+        self.organize.grid(row=1, column=1, sticky="w", pady=(8, 12))
+        ctk.CTkLabel(bar, text="Type or paste a folder and press Enter, or use Change. Each spot can also have its own folder.",
+                     font=font(11), text_color=FAINT, anchor="e"
+                     ).grid(row=1, column=2, columnspan=3, sticky="e", padx=(8, 18), pady=(8, 12))
 
         ctk.CTkLabel(bar, text="FORMAT", font=font(11, "bold"), text_color=MUTED
-                     ).grid(row=0, column=3, padx=(4, 10))
+                     ).grid(row=0, column=3, padx=(4, 10), pady=(12, 0))
         self.fmt = ctk.CTkSegmentedButton(bar, values=FORMATS, height=34, corner_radius=8,
                                           fg_color=FIELD, selected_color=ACCENT,
                                           selected_hover_color=ACCENT_HOVER,
@@ -458,7 +563,7 @@ class DJParadise(ctk.CTk):
                                           text_color=TEXT, font=font(12, "bold"),
                                           command=self.set_format)
         self.fmt.set(self.settings["format"])
-        self.fmt.grid(row=0, column=4, padx=(0, 18))
+        self.fmt.grid(row=0, column=4, padx=(0, 18), pady=(12, 0))
 
     def _build_spots(self):
         grid = ctk.CTkFrame(self, fg_color="transparent")
@@ -508,27 +613,98 @@ class DJParadise(ctk.CTk):
 
     # -- settings helpers
     def _show_path(self):
-        path = self.settings["output_dir"]
-        shown = path if len(path) < 70 else "…" + path[-68:]
-        self.path_btn.configure(text="  " + shown)
+        self.path_entry.configure(border_color=BORDER)
+        self.path_entry.delete(0, "end")
+        self.path_entry.insert(0, self.settings["output_dir"])
+
+    def set_output_dir(self, path, announce=True):
+        path = os.path.normpath(os.path.expandvars(os.path.expanduser(path.strip().strip('"'))))
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            self.path_entry.configure(border_color=BAD)
+            self.log("error", "Can't save to %s. Pick a different folder." % path)
+            return False
+        changed = path != self.settings["output_dir"]
+        self.settings["output_dir"] = path
+        self.remember_recent(path)
+        save_settings(self.settings)
+        self._show_path()
+        self.refresh_destinations()
+        if changed and announce:
+            self.log("info", "Saving to %s" % path)
+        return True
+
+    def apply_typed_path(self, quiet=False):
+        typed = self.path_entry.get().strip()
+        if not typed:
+            self._show_path()
+            return
+        if os.path.normpath(typed) == self.settings["output_dir"]:
+            return
+        if not self.set_output_dir(typed) and quiet:
+            self._show_path()
 
     def choose_folder(self):
         start = self.settings["output_dir"] if os.path.isdir(self.settings["output_dir"]) else os.path.expanduser("~")
         path = filedialog.askdirectory(initialdir=start, title="Choose where DJ Paradise saves music")
         if path:
-            self.settings["output_dir"] = os.path.normpath(path)
-            save_settings(self.settings)
-            self._show_path()
+            self.set_output_dir(path)
+
+    def remember_recent(self, path):
+        path = os.path.normpath(path)
+        recent = [p for p in self.settings.get("recent_dirs", []) if os.path.normpath(p) != path]
+        self.settings["recent_dirs"] = [path] + recent[:7]
+
+    def recent_menu(self):
+        menu = make_menu(self)
+        recent = [p for p in self.settings.get("recent_dirs", []) if p != self.settings["output_dir"]]
+        for p in recent:
+            menu.add_command(label=p, command=lambda p=p: self.set_output_dir(p))
+        if recent:
+            menu.add_separator()
+        default = default_music_dir()
+        if default != self.settings["output_dir"]:
+            menu.add_command(label="Default  (%s)" % default, command=lambda: self.set_output_dir(default))
+        desktop = os.path.join(os.path.expanduser("~"), "Desktop", "DJ Paradise")
+        if desktop != self.settings["output_dir"]:
+            menu.add_command(label="Desktop  (%s)" % desktop, command=lambda: self.set_output_dir(desktop))
+        menu.add_separator()
+        menu.add_command(label="Browse…", command=self.choose_folder)
+        x = self.recent_btn.winfo_rootx()
+        y = self.recent_btn.winfo_rooty() + self.recent_btn.winfo_height()
+        try:
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def set_organize(self):
+        self.settings["organize"] = bool(self.organize.get())
+        save_settings(self.settings)
+        self.refresh_destinations()
+
+    def refresh_destinations(self):
+        for card in self.cards.values():
+            card.refresh_destination()
+
+    def open_folder(self, path):
+        try:
+            os.makedirs(path, exist_ok=True)
+        except Exception:
+            pass
+        open_path(path)
 
     def open_output(self):
-        os.makedirs(self.settings["output_dir"], exist_ok=True)
-        open_path(self.settings["output_dir"])
+        self.open_folder(self.settings["output_dir"])
 
     def set_format(self, value):
         self.settings["format"] = value
         save_settings(self.settings)
 
     def output_for(self, spot):
+        custom = self.settings.get("spot_dirs", {}).get(spot["id"])
+        if custom:
+            return custom
         base = self.settings["output_dir"]
         if self.settings.get("organize", True):
             return os.path.join(base, spot["service"])

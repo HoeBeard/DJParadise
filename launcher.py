@@ -22,7 +22,7 @@ import traceback
 import urllib.request
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 
@@ -346,11 +346,11 @@ class Setup(object):
 # --------------------------------------------------------------------------
 
 class StartupWindow(object):
-    BG = "#0a0c13"
-    PANEL = "#121624"
+    BG = "#05080f"
+    PANEL = "#0b111d"
     TEXT = "#eef1f8"
     MUTED = "#8a93a8"
-    ACCENT = "#4f8cff"
+    ACCENT = "#1e90ff"
     COLORS = {"pending": "#3a4157", "working": "#f5a623", "ok": "#2ecc71",
               "warn": "#f5a623", "fail": "#ff4d5e"}
 
@@ -441,7 +441,7 @@ class StartupWindow(object):
     def button(self, parent, text, cmd, primary=False):
         b = self.tk.Button(parent, text=text, command=cmd, relief="flat", bd=0, cursor="hand2",
                            bg=self.ACCENT if primary else self.PANEL, fg="white",
-                           activebackground="#3a74e0" if primary else "#1c2236",
+                           activebackground="#1273d6" if primary else "#16213a",
                            activeforeground="white", font=("Segoe UI", 10, "bold"),
                            padx=16, pady=6)
         b.pack(side="left", padx=(0, 8))

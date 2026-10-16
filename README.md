@@ -1,5 +1,5 @@
 <p align="left">
-  <img src="https://hbcs.info/assets/software-mark.webp" alt="HB Software" height="72">
+  <img src="assets/hb_software_logo.png" alt="HB Software" height="110">
 </p>
 
 # DJ Paradise
@@ -45,11 +45,17 @@ Everything DJ Paradise installs stays inside its own folder (in a hidden `.runti
 
 ## Using DJ Paradise
 
-- **Save to** – choose where your music goes. By default it's `Music/DJ Paradise`, sorted into Spotify, SoundCloud and YouTube folders. Playlists get their own folder.
+- **Save to** – choose where your music goes, right from the top bar:
+  - Type or paste a folder path and press **Enter**, or click **Change…** to browse.
+  - **Recent ▾** jumps back to any folder you've used before.
+  - **Open** shows the folder.
+  - Turn **Sort into Spotify, SoundCloud and YouTube folders** on or off.
+  - By default music goes to `Music/DJ Paradise`. Playlists always get their own folder.
+- **Folder per spot** – every spot shows where it saves at the bottom of its card. Click **Change** there to give that spot its own folder (marked with ★), for example send SoundCloud songs straight to your edits folder. **Settings** can send every spot back to the main folder.
 - **Format** – MP3 (320 kbps), M4A, FLAC or WAV.
 - **Download all** – starts every spot that has a link in it.
 - **Stop** – cancels a running download.
-- **Settings** – turn folder sorting on or off, and add your own Spotify app keys (see below).
+- **Settings** – reset spot folders and add your own Spotify app keys (see below).
 
 ### Spotify request limits
 
