@@ -22,7 +22,7 @@ import traceback
 import urllib.request
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 

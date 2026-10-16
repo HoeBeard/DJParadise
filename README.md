@@ -54,6 +54,8 @@ Everything DJ Paradise installs stays inside its own folder (in a hidden `.runti
 - **Folder per spot** – every spot shows where it saves at the bottom of its card. Click **Change** there to give that spot its own folder (marked with ★), for example send SoundCloud songs straight to your edits folder. **Settings** can send every spot back to the main folder.
 - **Format** – MP3 (320 kbps), M4A, FLAC or WAV.
 - **Download all** – starts every spot that has a link in it.
+- **Downloads panel** – every track gets its own live progress bar with speed and time left, plus Saved, In library or Failed when it finishes. **Clear finished** tidies the list. The **Activity** tab keeps a log of everything.
+- **Hide ▾ / Show ▴** – collapse the bottom panel for more room. While it's hidden, the bar still shows overall progress.
 - **Stop** – cancels a running download.
 - **Settings** – reset spot folders and add your own Spotify app keys (see below).
 

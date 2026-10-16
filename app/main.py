@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from engines import SPOTS, FORMATS, DownloadJob, validate_url  # noqa: E402
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.1.1"
+APP_VERSION = "1.2.0"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 SOFTWARE_PAGE = "https://hbcs.info/software/"
@@ -314,6 +314,7 @@ class SpotCard(ctk.CTkFrame):
         out_dir = self.app.output_for(self.spot)
         fmt = self.app.settings["format"]
         sid = self.spot["id"]
+        self.run_id = self.app.next_run_id()
         self.job = DownloadJob(self.spot, url, out_dir, fmt, dict(self.app.settings),
                                lambda *evt: self.app.events.put((sid,) + evt))
         self.go_btn.configure(text="Stop", fg_color=CARD_HI, hover_color=BORDER, text_color=TEXT)
@@ -332,6 +333,8 @@ class SpotCard(ctk.CTkFrame):
             self.set_progress(args[0])
         elif kind == "log":
             self.app.log(args[0], args[1], self.spot)
+        elif kind == "track":
+            self.app.downloads.set_track(self.spot, (self.run_id, args[0]), args[1])
         elif kind == "done":
             self.finish(args[0], args[1])
 
@@ -363,11 +366,128 @@ class SpotCard(ctk.CTkFrame):
         self.entry.configure(state="normal")
         self.paste_btn.configure(state="normal")
         self.set_status(text, GOOD if ok else (MUTED if text == "Stopped" else BAD))
+        self.app.downloads.finish_run(self.run_id, ok, text)
         self.app.log("ok" if ok else "error", "%s %s  ·  %s"
                      % (self.spot["service"], self.spot["kind"].lower(), text))
         if ok:
             self.entry.delete(0, "end")
         self.app.refresh_activity()
+
+
+# --------------------------------------------------------------------------
+# Downloads list - one live progress bar per track
+# --------------------------------------------------------------------------
+
+STATE_TEXT = {"queued": "Queued", "downloading": "Downloading", "converting": "Converting",
+              "done": "Saved", "skipped": "In library", "failed": "Failed"}
+FINISHED = ("done", "skipped", "failed")
+
+
+def _short(text, n):
+    text = text or ""
+    return text if len(text) <= n else text[:n - 1].rstrip() + "\u2026"
+
+
+class TrackRow(ctk.CTkFrame):
+    def __init__(self, master, spot):
+        ctk.CTkFrame.__init__(self, master, fg_color=CARD, corner_radius=10, height=46)
+        self.spot = spot
+        self.state = None
+        self.raw_title = ""
+        self.grid_columnconfigure(1, weight=1)
+        ctk.CTkFrame(self, width=4, height=30, fg_color=spot["color"], corner_radius=2
+                     ).grid(row=0, column=0, rowspan=2, padx=(10, 10), pady=8, sticky="ns")
+        self.title = ctk.CTkLabel(self, text="", anchor="w", font=font(12, "bold"), text_color=TEXT, height=18)
+        self.title.grid(row=0, column=1, sticky="ew", pady=(7, 0))
+        self.detail = ctk.CTkLabel(self, text="", anchor="w", font=font(11), text_color=MUTED, height=16)
+        self.detail.grid(row=1, column=1, sticky="ew", pady=(0, 7))
+        self.bar = ctk.CTkProgressBar(self, width=190, height=6, corner_radius=3,
+                                      fg_color=FIELD, progress_color=spot["color"])
+        self.bar.grid(row=0, column=2, rowspan=2, padx=(12, 12))
+        self.bar.set(0)
+        self.pct = ctk.CTkLabel(self, text="", width=44, anchor="e", font=font(12, "bold"), text_color=TEXT)
+        self.pct.grid(row=0, column=3, rowspan=2)
+        self.badge = ctk.CTkLabel(self, text="", width=92, anchor="e", font=font(11, "bold"), text_color=MUTED)
+        self.badge.grid(row=0, column=4, rowspan=2, padx=(6, 14))
+
+    def apply(self, info):
+        state = info.get("state", "downloading")
+        prog = max(0.0, min(1.0, float(info.get("progress") or 0.0)))
+        if state == "done":
+            prog = 1.0
+        self.raw_title = info.get("title") or self.raw_title or "Track"
+        self.title.configure(text=_short("%s  \u00B7  %s" % (self.spot["service"], self.raw_title), 90))
+        self.detail.configure(text=_short(info.get("detail") or "", 110),
+                              text_color=BAD if state == "failed" else MUTED)
+        self.bar.set(prog)
+        if state == "failed":
+            self.bar.configure(progress_color=BAD)
+        self.pct.configure(text="" if state in ("failed", "skipped") else "%d%%" % int(prog * 100))
+        color = {"done": GOOD, "skipped": MUTED, "failed": BAD}.get(state, self.spot["color"])
+        self.badge.configure(text=STATE_TEXT.get(state, state.title()), text_color=color)
+        self.state = state
+
+
+class DownloadsList(ctk.CTkScrollableFrame):
+    MAX_ROWS = 150
+
+    def __init__(self, master, app):
+        ctk.CTkScrollableFrame.__init__(self, master, fg_color=FIELD, corner_radius=10,
+                                        scrollbar_button_color=BORDER,
+                                        scrollbar_button_hover_color=FAINT)
+        self.app = app
+        self.rows = {}
+        self.order = []
+        self.empty = ctk.CTkLabel(self, text="Downloads show up here with a live progress bar for every track.",
+                                  font=font(12), text_color=FAINT)
+        self.empty.pack(pady=40)
+        self.empty_shown = True
+
+    def set_track(self, spot, key, info):
+        row = self.rows.get(key)
+        if row is None:
+            if self.empty_shown:
+                self.empty.pack_forget()
+                self.empty_shown = False
+            row = TrackRow(self, spot)
+            first = next((self.rows[k] for k in reversed(self.order) if k in self.rows), None)
+            if first is not None:
+                row.pack(fill="x", padx=6, pady=(6, 0), before=first)
+            else:
+                row.pack(fill="x", padx=6, pady=(6, 0))
+            self.rows[key] = row
+            self.order.append(key)
+            self._trim()
+        row.apply(info)
+
+    def finish_run(self, run_id, ok, text):
+        # Anything still marked active when a spot stops was cut short.
+        for key, row in self.rows.items():
+            if key[0] == run_id and row.state not in FINISHED:
+                row.apply({"title": row.raw_title, "state": "failed", "progress": 0.0,
+                           "detail": "Didn't finish" if ok else text})
+
+    def active_count(self):
+        return sum(1 for r in self.rows.values() if r.state not in FINISHED)
+
+    def clear_finished(self):
+        for key in list(self.order):
+            row = self.rows.get(key)
+            if row is not None and row.state in FINISHED:
+                row.destroy()
+                del self.rows[key]
+                self.order.remove(key)
+        if not self.rows and not self.empty_shown:
+            self.empty.pack(pady=40)
+            self.empty_shown = True
+
+    def _trim(self):
+        while len(self.rows) > self.MAX_ROWS:
+            victim = next((k for k in self.order if self.rows[k].state in FINISHED), None)
+            if victim is None:
+                return
+            self.rows.pop(victim).destroy()
+            self.order.remove(victim)
 
 
 # --------------------------------------------------------------------------
@@ -455,10 +575,11 @@ class DJParadise(ctk.CTk):
         self.settings = load_settings()
         self.events = queue.Queue()
         self.cards = {}
+        self._run_seq = 0
 
         self.title("%s  |  %s" % (APP_NAME, COMPANY))
-        self.geometry("1220x840")
-        self.minsize(1000, 720)
+        self.geometry("1240x900")
+        self.minsize(1000, 700)
         self._set_icon()
 
         self.grid_columnconfigure(0, weight=1)
@@ -578,21 +699,52 @@ class DJParadise(ctk.CTk):
             self.cards[spot["id"]] = card
 
     def _build_activity(self):
-        box = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14, border_width=1, border_color=BORDER)
+        """Bottom panel: live per-track Downloads list + Activity log. Can be hidden."""
+        box = self.panel = ctk.CTkFrame(self, fg_color=PANEL, corner_radius=14,
+                                        border_width=1, border_color=BORDER)
         box.grid(row=3, column=0, sticky="ew", padx=28, pady=(10, 0))
         box.grid_columnconfigure(0, weight=1)
+
         top = ctk.CTkFrame(box, fg_color="transparent")
-        top.grid(row=0, column=0, sticky="ew", padx=18, pady=(12, 0))
-        ctk.CTkLabel(top, text="ACTIVITY", font=font(11, "bold"), text_color=MUTED).pack(side="left")
-        self.activity_count = ctk.CTkLabel(top, text="", font=font(11), text_color=FAINT)
-        self.activity_count.pack(side="left", padx=(10, 0))
-        ctk.CTkButton(top, text="Clear", width=60, height=24, corner_radius=6, fg_color="transparent",
-                      hover_color=CARD_HI, text_color=MUTED, font=font(11),
-                      command=self.clear_log).pack(side="right")
-        self.logbox = ctk.CTkTextbox(box, height=130, fg_color=FIELD, corner_radius=10,
+        top.grid(row=0, column=0, sticky="ew", padx=14, pady=10)
+        top.grid_columnconfigure(2, weight=1)
+        self.tabs = ctk.CTkSegmentedButton(top, values=["Downloads", "Activity"], height=30,
+                                           corner_radius=8, fg_color=FIELD, selected_color=CARD_HI,
+                                           selected_hover_color=BORDER, unselected_color=FIELD,
+                                           unselected_hover_color=CARD_HI, text_color=TEXT,
+                                           font=font(12, "bold"), command=self.show_tab)
+        self.tabs.grid(row=0, column=0, sticky="w")
+        self.activity_count = ctk.CTkLabel(top, text="", font=font(12), text_color=MUTED)
+        self.activity_count.grid(row=0, column=1, sticky="w", padx=(14, 0))
+
+        right = ctk.CTkFrame(top, fg_color="transparent")
+        right.grid(row=0, column=3, sticky="e")
+        self.overall_bar = ctk.CTkProgressBar(right, width=160, height=6, corner_radius=3,
+                                              fg_color=FIELD, progress_color=ACCENT)
+        self.overall_bar.set(0)
+        self.overall_pct = ctk.CTkLabel(right, text="", width=40, font=font(11, "bold"), text_color=MUTED)
+        self.clear_btn = ctk.CTkButton(right, text="Clear finished", width=104, height=28, corner_radius=8,
+                                       fg_color="transparent", hover_color=CARD_HI, text_color=MUTED,
+                                       font=font(12), command=self.clear_current)
+        self.clear_btn.pack(side="left", padx=(10, 0))
+        self.toggle_btn = ctk.CTkButton(right, text="", width=86, height=28, corner_radius=8,
+                                        fg_color=CARD_HI, hover_color=BORDER, text_color=TEXT,
+                                        font=font(12, "bold"), command=self.toggle_panel)
+        self.toggle_btn.pack(side="left", padx=(8, 0))
+
+        self.panel_body = ctk.CTkFrame(box, fg_color="transparent", height=200)
+        self.panel_body.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 14))
+        self.panel_body.grid_columnconfigure(0, weight=1)
+        self.panel_body.grid_propagate(False)
+        self.panel_body.grid_rowconfigure(0, weight=1)
+
+        self.downloads = DownloadsList(self.panel_body, self)
+        self.downloads.grid(row=0, column=0, sticky="nsew")
+
+        self.logbox = ctk.CTkTextbox(self.panel_body, fg_color=FIELD, corner_radius=10,
                                      border_width=0, text_color=TEXT, font=font(12),
                                      wrap="none", activate_scrollbars=True)
-        self.logbox.grid(row=1, column=0, sticky="ew", padx=14, pady=(8, 14))
+        self.logbox.grid(row=0, column=0, sticky="nsew")
         tb = self.logbox._textbox
         tb.tag_configure("time", foreground=FAINT)
         tb.tag_configure("ok", foreground=GOOD)
@@ -601,6 +753,52 @@ class DJParadise(ctk.CTk):
         for spot in SPOTS:
             tb.tag_configure("svc_" + spot["service"], foreground=spot["color"])
         self.logbox.configure(state="disabled")
+
+        tab = self.settings.get("panel_tab", "Downloads")
+        self.tabs.set(tab if tab in ("Downloads", "Activity") else "Downloads")
+        self.show_tab(self.tabs.get(), save=False)
+        self.set_panel_open(self.settings.get("panel_open", True), save=False)
+
+    def show_tab(self, name, save=True):
+        if name == "Activity":
+            self.downloads.grid_remove()
+            self.logbox.grid()
+            self.clear_btn.configure(text="Clear log")
+        else:
+            self.logbox.grid_remove()
+            self.downloads.grid()
+            self.clear_btn.configure(text="Clear finished")
+        if save:
+            self.settings["panel_tab"] = name
+            save_settings(self.settings)
+
+    def set_panel_open(self, is_open, save=True):
+        self.panel_open = bool(is_open)
+        if self.panel_open:
+            self.panel_body.grid()
+            self.tabs.configure(state="normal")
+            self.clear_btn.pack(side="left", padx=(10, 0), before=self.toggle_btn)
+            self.toggle_btn.configure(text="Hide \u25BE")
+        else:
+            self.panel_body.grid_remove()
+            self.clear_btn.pack_forget()
+            self.toggle_btn.configure(text="Show \u25B4")
+        if save:
+            self.settings["panel_open"] = self.panel_open
+            save_settings(self.settings)
+
+    def toggle_panel(self):
+        self.set_panel_open(not self.panel_open)
+
+    def clear_current(self):
+        if self.tabs.get() == "Activity":
+            self.clear_log()
+        else:
+            self.downloads.clear_finished()
+
+    def next_run_id(self):
+        self._run_seq += 1
+        return self._run_seq
 
     def _build_footer(self):
         foot = ctk.CTkFrame(self, fg_color="transparent")
@@ -722,8 +920,36 @@ class DJParadise(ctk.CTk):
         self.refresh_activity()
 
     def refresh_activity(self):
-        running = sum(1 for c in self.cards.values() if c.busy)
-        self.activity_count.configure(text=("%d running" % running) if running else "")
+        busy = [c for c in self.cards.values() if c.busy]
+        active = self.downloads.active_count()
+        parts = []
+        if busy:
+            parts.append("%d spot%s running" % (len(busy), "" if len(busy) == 1 else "s"))
+        if active:
+            parts.append("%d track%s downloading" % (active, "" if active == 1 else "s"))
+        text = "  \u00B7  ".join(parts)
+        if text != getattr(self, "_summary", None):
+            self._summary = text
+            self.activity_count.configure(text=text)
+        if busy:
+            values = []
+            for c in busy:
+                try:
+                    values.append(0.0 if c._indeterminate else float(c.bar.get()))
+                except Exception:
+                    values.append(0.0)
+            avg = sum(values) / len(values)
+            if not getattr(self, "_overall_shown", False):
+                self._overall_shown = True
+                anchor = self.clear_btn if self.panel_open else self.toggle_btn
+                self.overall_pct.pack(side="left", before=anchor)
+                self.overall_bar.pack(side="left", padx=(0, 8), before=self.overall_pct)
+            self.overall_bar.set(avg)
+            self.overall_pct.configure(text="%d%%" % int(avg * 100))
+        elif getattr(self, "_overall_shown", False):
+            self._overall_shown = False
+            self.overall_bar.pack_forget()
+            self.overall_pct.pack_forget()
 
     # -- log
     def log(self, level, text, spot=None):
@@ -746,16 +972,34 @@ class DJParadise(ctk.CTk):
 
     # -- event loop
     def poll(self):
+        # Progress arrives many times a second; only draw the latest state per track.
+        latest = {}
+        ordered = []
         try:
-            for _ in range(200):
+            for _ in range(2000):
                 evt = self.events.get_nowait()
-                card = self.cards.get(evt[0])
-                if card is not None:
-                    card.handle(*evt[1:])
+                if evt[1] == "track":
+                    k = (evt[0], evt[2])
+                    if k not in latest:
+                        ordered.append(k)
+                    latest[k] = evt
+                else:
+                    for k in ordered:
+                        self._dispatch(latest[k])
+                    latest.clear()
+                    del ordered[:]
+                    self._dispatch(evt)
         except queue.Empty:
             pass
+        for k in ordered:
+            self._dispatch(latest[k])
         self.refresh_activity()
         self.after(100, self.poll)
+
+    def _dispatch(self, evt):
+        card = self.cards.get(evt[0])
+        if card is not None:
+            card.handle(*evt[1:])
 
     def on_close(self):
         busy = [c for c in self.cards.values() if c.busy]
