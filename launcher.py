@@ -22,7 +22,7 @@ import traceback
 import urllib.request
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 
@@ -53,7 +53,7 @@ DEPENDENCIES = [
     {"key": "ytdlp", "label": "YouTube & SoundCloud engine", "spec": "yt-dlp[default]",
      "dist": "yt-dlp", "required": True, "auto_update": True},
     {"key": "spotdl", "label": "Spotify engine", "spec": "spotdl>=4.2",
-     "dist": "spotdl", "required": False, "auto_update": True},
+     "dist": "spotdl", "required": False, "auto_update": True, "slow": True},
     {"key": "deno", "label": "YouTube script runtime", "spec": "deno",
      "dist": "deno", "required": False},
     {"key": "ffmpeg", "label": "Audio converter", "spec": "static-ffmpeg",
@@ -149,9 +149,69 @@ class Setup(object):
         return proc.returncode, proc.stdout or ""
 
     def pip(self, *args, **kw):
-        cmd = [venv_python(), "-m", "pip", "--disable-pip-version-check",
-               "--no-input"] + list(args)
-        return self.run(cmd, timeout=kw.get("timeout", 900))
+        """Run pip, streaming its progress to the log and the startup window.
+        Stops pip if it goes quiet for too long instead of hanging forever."""
+        cmd = [venv_python(), "-m", "pip", "--disable-pip-version-check", "--no-input",
+               "--progress-bar", "off", "--default-timeout", "60"] + list(args)
+        key = kw.get("key")
+        idle_limit = kw.get("idle", 300)
+        total_limit = kw.get("timeout", 1800)
+        self.log("$ " + " ".join('"%s"' % c if " " in c else c for c in cmd))
+        try:
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                universal_newlines=True, encoding="utf-8", errors="replace", bufsize=1,
+                creationflags=NO_WINDOW)
+        except OSError as exc:
+            self.log("(could not start: %s)" % exc)
+            return 1, ""
+
+        started = time.time()
+        last = [time.time()]
+        stopped = [False]
+
+        def watchdog():
+            while proc.poll() is None:
+                now = time.time()
+                if now - last[0] > idle_limit or now - started > total_limit:
+                    stopped[0] = True
+                    self.log("(no progress, stopping installer)")
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    return
+                time.sleep(2)
+
+        threading.Thread(target=watchdog, daemon=True).start()
+        out = []
+        for raw in proc.stdout:
+            last[0] = time.time()
+            line = raw.rstrip()
+            if not line:
+                continue
+            out.append(line)
+            self.log(line)
+            detail = self._pip_detail(line)
+            if detail and key:
+                self.dep(key, "working", detail)
+        proc.wait()
+        code = 1 if stopped[0] else proc.returncode
+        return code, "\n".join(out)
+
+    @staticmethod
+    def _pip_detail(line):
+        s = line.strip()
+        for prefix, label in (("Collecting ", "Getting "), ("Downloading ", "Downloading "),
+                              ("Building wheel for ", "Building "),
+                              ("Installing collected packages", "Installing"),
+                              ("Successfully installed", "Finishing")):
+            if s.startswith(prefix):
+                rest = s[len(prefix):].split()[0] if s[len(prefix):].split() else ""
+                name = rest.split("/")[-1].split("-")[0].split("==")[0].split(">")[0].split("<")[0].split("[")[0]
+                text = (label + name).strip() if label.endswith(" ") else label
+                return text[:34]
+        return None
 
     # -- steps
     def ensure_runtime(self, state):
@@ -255,7 +315,7 @@ class Setup(object):
         fresh = self.ensure_runtime(state)
         if fresh:
             self.status("Setting up installer", 0.1)
-            self.pip("install", "--upgrade", "pip", "setuptools", "wheel", timeout=600)
+            self.pip("install", "--upgrade", "pip", "setuptools", "wheel", timeout=600, idle=180)
 
         installed = self.installed_packages()
         n = len(DEPENDENCIES)
@@ -266,11 +326,13 @@ class Setup(object):
             if normalize(dep["dist"]) in installed:
                 self.dep(dep["key"], "ok", installed[normalize(dep["dist"])])
                 continue
-            self.status("Installing %s" % dep["label"].lower(), frac)
-            code, _ = self.pip("install", "--upgrade", dep["spec"])
+            note = "  (this one takes a few minutes)" if dep.get("slow") else ""
+            self.status("Installing %s%s" % (dep["label"].lower(), note), frac)
+            code, _ = self.pip("install", "--upgrade", dep["spec"], key=dep["key"])
             if code != 0:
                 # One retry - networks blink.
-                code, _ = self.pip("install", "--upgrade", dep["spec"])
+                self.status("Retrying %s" % dep["label"].lower(), frac)
+                code, _ = self.pip("install", "--upgrade", dep["spec"], key=dep["key"])
             if code == 0:
                 self.dep(dep["key"], "ok", "installed")
             elif dep["required"]:
@@ -286,7 +348,7 @@ class Setup(object):
         if now - state.get("last_update", 0) > UPDATE_EVERY_SECONDS:
             specs = [d["spec"] for d in DEPENDENCIES if d.get("auto_update")]
             self.status("Checking for engine updates", 0.76)
-            code, _ = self.pip("install", "--upgrade", *specs, timeout=900)
+            code, _ = self.pip("install", "--upgrade", *specs, timeout=900, idle=180)
             if code == 0:
                 state["last_update"] = now
 
@@ -435,8 +497,20 @@ class StartupWindow(object):
         tk.Label(root, text="© 2026 %s  ·  hbcs.info  ·  v%s" % (COMPANY, APP_VERSION),
                  bg=self.BG, fg="#4a5269", font=("Segoe UI", 8)).pack(side="bottom", pady=10)
 
+        self.status_text = "Starting up"
+        self.status_since = time.time()
+        self.running = False
         self.start()
         root.after(80, self.poll)
+        root.after(1000, self.tick)
+
+    def tick(self):
+        # Show a running clock on long steps so it's clear the program is working.
+        if self.running:
+            secs = int(time.time() - self.status_since)
+            if secs >= 5:
+                self.status_var.set("%s   %d:%02d" % (self.status_text, secs // 60, secs % 60))
+        self.root.after(1000, self.tick)
 
     def button(self, parent, text, cmd, primary=False):
         b = self.tk.Button(parent, text=text, command=cmd, relief="flat", bd=0, cursor="hand2",
@@ -456,6 +530,7 @@ class StartupWindow(object):
             dot.configure(fg=self.COLORS["pending"])
             info.configure(text="")
         setup = Setup(self.events)
+        self.running = True
         threading.Thread(target=setup.run_threaded, daemon=True).start()
 
     def poll(self):
@@ -464,14 +539,17 @@ class StartupWindow(object):
                 evt = self.events.get_nowait()
                 kind = evt[0]
                 if kind == "status":
+                    self.status_text = evt[1]
+                    self.status_since = time.time()
                     self.status_var.set(evt[1])
                     if evt[2] is not None:
                         self.bar["value"] = int(evt[2] * 1000)
                 elif kind == "dep":
                     dot, info = self.rows[evt[1]]
                     dot.configure(fg=self.COLORS.get(evt[2], self.MUTED))
-                    info.configure(text=evt[3] if evt[2] != "working" else "checking")
+                    info.configure(text=evt[3] or ("checking" if evt[2] == "working" else ""))
                 elif kind == "done":
+                    self.running = False
                     self.finish(evt[1], evt[2])
                     return
         except queue.Empty:
@@ -479,6 +557,7 @@ class StartupWindow(object):
         self.root.after(80, self.poll)
 
     def finish(self, ok, payload):
+        self.root.after(80, self.poll)
         if ok:
             self.status_var.set("Starting DJ Paradise")
             self.root.after(1400, self.root.destroy)

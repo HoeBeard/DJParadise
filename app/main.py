@@ -26,7 +26,7 @@ from PIL import Image, ImageDraw, ImageFont  # noqa: E402
 from engines import SPOTS, FORMATS, DownloadJob, validate_url  # noqa: E402
 
 APP_NAME = "DJ Paradise"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.1.1"
 COMPANY = "HB Software"
 WEBSITE = "https://hbcs.info"
 SOFTWARE_PAGE = "https://hbcs.info/software/"
